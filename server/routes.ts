@@ -8,7 +8,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
   app.get("/api/appointments", async (req, res) => {
     try {
       const { date } = req.query;
-      
+
       if (date && typeof date === "string") {
         const targetDate = new Date(date);
         if (isNaN(targetDate.getTime())) {
@@ -17,7 +17,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
         const appointments = await storage.getAppointmentsByDate(targetDate);
         return res.json(appointments);
       }
-      
+
       const appointments = await storage.getAppointments();
       res.json(appointments);
     } catch (error) {
@@ -31,39 +31,49 @@ export async function registerRoutes(app: Express): Promise<Server> {
       // Validate request body
       const result = insertAppointmentSchema.safeParse(req.body);
       if (!result.success) {
-        return res.status(400).json({ 
-          message: "Validation failed", 
-          errors: result.error.issues 
+        return res.status(400).json({
+          message: "Validation failed",
+          errors: result.error.issues,
         });
       }
 
       const appointmentData = result.data;
-      
+
       // Validate service type
       if (!(appointmentData.service in SERVICES)) {
         return res.status(400).json({ message: "Invalid service type" });
       }
 
       // Validate business hours (09:00 - 19:00)
-      const startHour = appointmentData.startTime.getHours();
-      const endHour = appointmentData.endTime.getHours();
-      const endMinutes = appointmentData.endTime.getMinutes();
-      
-      if (startHour < 9 || startHour >= 19 || endHour > 19 || (endHour === 19 && endMinutes > 0)) {
-        return res.status(400).json({ 
-          message: "Appointments must be between 09:00 and 19:00" 
+      // Convert to local time for validation since business hours are in local timezone
+      const startTime = new Date(appointmentData.startTime);
+      const endTime = new Date(appointmentData.endTime);
+
+      // Get local time components (this will respect the timezone offset)
+      const startHour = startTime.getHours();
+      const endHour = endTime.getHours();
+      const endMinutes = endTime.getMinutes();
+
+      if (
+        startHour < 9 ||
+        startHour >= 19 ||
+        endHour > 19 ||
+        (endHour === 19 && endMinutes > 0)
+      ) {
+        return res.status(400).json({
+          message: "Appointments must be between 09:00 and 19:00",
         });
       }
 
       // Check if time slot is available
       const isAvailable = await storage.checkTimeSlotAvailable(
-        appointmentData.startTime,
-        appointmentData.endTime
+        startTime,
+        endTime
       );
 
       if (!isAvailable) {
-        return res.status(409).json({ 
-          message: "Time slot is already booked" 
+        return res.status(409).json({
+          message: "Time slot is already booked",
         });
       }
 
@@ -104,31 +114,39 @@ export async function registerRoutes(app: Express): Promise<Server> {
       }
 
       const existingAppointments = await storage.getAppointmentsByDate(date);
-      
+
       // Generate all possible 30-minute slots from 09:00 to 19:00
       const slots = [];
       for (let hour = 9; hour < 19; hour++) {
         for (let minute = 0; minute < 60; minute += 30) {
+          // Create slot times in local timezone
           const slotStart = new Date(date);
           slotStart.setHours(hour, minute, 0, 0);
-          
+
           const slotEnd = new Date(slotStart);
           slotEnd.setMinutes(slotEnd.getMinutes() + 30);
-          
+
           // Don't include slots that would end after 19:00
           if (slotEnd.getHours() > 19) {
             break;
           }
 
-          const isBooked = existingAppointments.some(appointment => 
-            (slotStart >= appointment.startTime && slotStart < appointment.endTime) ||
-            (slotEnd > appointment.startTime && slotEnd <= appointment.endTime) ||
-            (slotStart <= appointment.startTime && slotEnd >= appointment.endTime)
-          );
+          const isBooked = existingAppointments.some((appointment) => {
+            // Convert stored UTC times to local times for comparison
+            const aptStart = new Date(appointment.startTime);
+            const aptEnd = new Date(appointment.endTime);
+
+            // Use the same overlap detection logic as in storage
+            // An overlap occurs when:
+            // - existing appointment starts before new slot ends, AND
+            // - existing appointment ends after new slot starts
+            // Use < instead of <= to allow adjacent appointments
+            return aptStart < slotEnd && aptEnd > slotStart;
+          });
 
           slots.push({
             time: slotStart.toTimeString().slice(0, 5), // HH:MM format
-            available: !isBooked
+            available: !isBooked,
           });
         }
       }

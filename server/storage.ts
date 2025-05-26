@@ -1,6 +1,10 @@
-import { appointments, type Appointment, type InsertAppointment } from "../shared/schema.js";
+import {
+  appointments,
+  type Appointment,
+  type InsertAppointment,
+} from "../shared/schema.js";
 import { db } from "./db.js";
-import { eq, and, gte, lte } from "drizzle-orm";
+import { eq, and, gte, lte, gt, lt } from "drizzle-orm";
 
 export interface IStorage {
   getAppointments(): Promise<Appointment[]>;
@@ -40,36 +44,48 @@ export class DatabaseStorage implements IStorage {
       .where(eq(appointments.id, id));
     return appointment || undefined;
   }
-
-  async createAppointment(insertAppointment: InsertAppointment): Promise<Appointment> {
-    console.log('Creating appointment:', insertAppointment);
+  async createAppointment(
+    insertAppointment: InsertAppointment
+  ): Promise<Appointment> {
+    console.log("Creating appointment:", insertAppointment);
     const [appointment] = await db
       .insert(appointments)
       .values(insertAppointment)
       .returning();
-    console.log('Created appointment:', appointment);
+    console.log("Created appointment:", appointment);
     return appointment;
   }
 
   async deleteAppointment(id: number): Promise<boolean> {
-    const result = await db
-      .delete(appointments)
-      .where(eq(appointments.id, id));
+    const result = await db.delete(appointments).where(eq(appointments.id, id));
     return (result.rowCount || 0) > 0;
   }
 
-  async checkTimeSlotAvailable(startTime: Date, endTime: Date): Promise<boolean> {
+  async checkTimeSlotAvailable(
+    startTime: Date,
+    endTime: Date
+  ): Promise<boolean> {
     const conflictingAppointments = await db
       .select()
       .from(appointments)
       .where(
         and(
           // Check for overlapping appointments
-          lte(appointments.startTime, endTime),
-          gte(appointments.endTime, startTime)
+          // An overlap occurs when:
+          // - existing appointment starts before new appointment ends, AND
+          // - existing appointment ends after new appointment starts
+          // Use < instead of <= to allow adjacent appointments
+          lt(appointments.startTime, endTime),
+          gt(appointments.endTime, startTime)
         )
       );
-    
+
+    console.log("Checking time slot availability:", {
+      startTime,
+      endTime,
+      conflictingAppointments,
+    });
+
     return conflictingAppointments.length === 0;
   }
 }
